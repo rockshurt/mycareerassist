@@ -5,8 +5,9 @@ import json
 import re
 from typing import List, Dict, Optional
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 import urllib.parse
+import feedparser
 
 # 1. Page Configuration
 st.set_page_config(
@@ -69,10 +70,10 @@ with st.sidebar:
         """)
         st.caption("v1.0 | Powered by Streamlit & Arbeitsagentur API")
 
-# 4. Job Search Function - Using web search
+# 4. Job Search Function - Using Indeed RSS Feed (Real Jobs)
 def fetch_jobs_arbeitsagentur(query: str, location: str, radius: int) -> List[Dict]:
     """
-    Fetches jobs from Arbeitsagentur by constructing search URLs and providing links.
+    Fetches real job listings from Indeed RSS feed.
     
     Args:
         query: Job title or keyword
@@ -80,58 +81,68 @@ def fetch_jobs_arbeitsagentur(query: str, location: str, radius: int) -> List[Di
         radius: Search radius in kilometers
     
     Returns:
-        List of job dictionaries with search links
+        List of real job dictionaries
     """
     
     try:
-        # Construct the search URL for Arbeitsagentur
-        params = {
-            'was': query,
-            'wo': location,
-            'umkreis': radius,
-        }
+        # Use Indeed RSS feed - returns real job listings
+        # Format: https://de.indeed.com/rss?q=search+term&l=location
+        search_query = quote(query)
+        location_query = quote(location)
         
-        search_url = f"https://www.arbeitsagentur.de/jobsuche/?{urlencode(params)}"
+        rss_url = f"https://de.indeed.com/rss?q={search_query}&l={location_query}&sort=date"
         
-        # Test if we can reach the page
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html',
-            'Accept-Language': 'de-DE,de;q=0.9',
-        }
+        # Parse the RSS feed
+        feed = feedparser.parse(rss_url)
         
-        response = requests.get(search_url, headers=headers, timeout=10)
-        response.raise_for_status()
-        
-        # Create mock job listings that link to the search results
-        # The actual results will be displayed on Arbeitsagentur's website
         jobs = []
         
-        # Generate multiple job entries pointing to the search
-        job_titles = [
-            f'{query}',
-            f'Senior {query}',
-            f'{query} (Vollzeit)',
-            f'{query} (Remote)',
-            f'{query} (Festanstellung)',
-        ]
-        
-        for i, title in enumerate(job_titles, 1):
-            jobs.append({
-                'title': title,
-                'company': 'Bundesagentur für Arbeit - Jobsuche',
+        if feed.entries:
+            # Process each job entry from the RSS feed
+            for entry in feed.entries[:20]:  # Get up to 20 results
+                try:
+                    # Extract job information from RSS entry
+                    title = entry.get('title', 'Unbekannter Titel')
+                    
+                    # Parse the summary to extract company and location
+                    summary = entry.get('summary', '')
+                    
+                    # Extract company name (usually in format "Company Name - City")
+                    company_match = re.search(r'^([^-]+)', title)
+                    company = company_match.group(1).strip() if company_match else 'Unbekannt'
+                    
+                    # Remove company name from title
+                    job_title = re.sub(r'^[^-]+-\s*', '', title).strip()
+                    
+                    # Get the link
+                    link = entry.get('link', '')
+                    
+                    job_dict = {
+                        'title': job_title,
+                        'company': company,
+                        'location': location,
+                        'url': link,
+                        'description': summary[:200] + '...' if len(summary) > 200 else summary,
+                        'published': entry.get('published', 'Datum unbekannt')
+                    }
+                    
+                    jobs.append(job_dict)
+                except Exception as e:
+                    continue
+            
+            return jobs
+        else:
+            # If RSS feed doesn't return results, provide a helpful message
+            return [{
+                'title': f'Suche: {query}',
+                'company': 'Indeed.com',
                 'location': location,
-                'url': search_url,
-                'description': f'Klicken Sie auf den Link um alle {query}-Stellenangebote in {location} zu sehen',
-                'id': i
-            })
+                'url': f'https://de.indeed.com/jobs?q={search_query}&l={location_query}',
+                'description': 'Klicken Sie auf den Link, um die aktuellen Stellenangebote auf Indeed zu sehen',
+                'published': 'Live'
+            }]
         
-        return jobs[:5]  # Return max 5 results
-        
-    except requests.exceptions.Timeout:
-        st.error("⏱️ Anfrage zeitüberschritten. Bitte später erneut versuchen.")
-        return []
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         st.error(f"❌ Fehler bei der Jobsuche: {str(e)}")
         return []
 
